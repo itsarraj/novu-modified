@@ -1,0 +1,244 @@
+name: novu
+
+services:
+  redis:
+    image: redis:alpine
+    container_name: novu_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - novu
+
+  mongodb:
+    image: mongo:8.0.17
+    container_name: novu_mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    volumes:
+      - mongodb_data:/data/db
+    ports:
+      - "${DOCKER_MONGO_PORT:-27017}:27017"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--username",
+          "${MONGO_INITDB_ROOT_USERNAME}",
+          "--password",
+          "${MONGO_INITDB_ROOT_PASSWORD}",
+          "--eval",
+          "db.adminCommand('ping').ok",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - novu
+
+  api:
+    image: "${NOVU_API_IMAGE:-ghcr.io/novuhq/novu/api}:${NOVU_IMAGE_TAG:-3.14.0}"
+    container_name: novu_api
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${API_PORT:-3000}
+      API_ROOT_URL: ${API_ROOT_URL}
+      FRONT_BASE_URL: ${FRONT_BASE_URL}
+      DASHBOARD_URL: ${DASHBOARD_URL}
+      MONGO_URL: ${MONGO_URL}
+      MONGO_MIN_POOL_SIZE: ${MONGO_MIN_POOL_SIZE:-50}
+      MONGO_MAX_POOL_SIZE: ${MONGO_MAX_POOL_SIZE:-500}
+      MONGO_AUTO_CREATE_INDEXES: ${MONGO_AUTO_CREATE_INDEXES:-false}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB_INDEX: ${REDIS_DB_INDEX:-2}
+      REDIS_CACHE_SERVICE_HOST: ${REDIS_CACHE_SERVICE_HOST:-}
+      REDIS_CACHE_SERVICE_PORT: ${REDIS_CACHE_SERVICE_PORT:-}
+      JWT_SECRET: ${JWT_SECRET}
+      STORE_ENCRYPTION_KEY: ${STORE_ENCRYPTION_KEY}
+      NOVU_SECRET_KEY: ${NOVU_SECRET_KEY}
+      DISABLE_USER_REGISTRATION: ${DISABLE_USER_REGISTRATION:-false}
+      GLOBAL_CONTEXT_PATH: ${GLOBAL_CONTEXT_PATH:-}
+      API_CONTEXT_PATH: ${API_CONTEXT_PATH:-}
+      WS_CONTEXT_PATH: ${WS_CONTEXT_PATH:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      NEW_RELIC_ENABLED: ${NEW_RELIC_ENABLED:-false}
+      NEW_RELIC_APP_NAME: ${NEW_RELIC_APP_NAME:-}
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
+      # Storage (recommended: real S3/GCS/Azure in production)
+      S3_LOCAL_STACK: ${S3_LOCAL_STACK:-}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-}
+      S3_REGION: ${S3_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      IS_API_IDEMPOTENCY_ENABLED: ${IS_API_IDEMPOTENCY_ENABLED:-false}
+      IS_API_RATE_LIMITING_ENABLED: ${IS_API_RATE_LIMITING_ENABLED:-false}
+      IS_V2_ENABLED: ${IS_V2_ENABLED:-false}
+    ports:
+      - "${API_PORT:-3000}:${API_PORT:-3000}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:$${PORT}/v1/health-check || exit 1",
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - novu
+
+  worker:
+    image: "${NOVU_WORKER_IMAGE:-ghcr.io/novuhq/novu/worker}:${NOVU_IMAGE_TAG:-3.14.0}"
+    container_name: novu_worker
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${WORKER_PORT:-3004}
+      MONGO_URL: ${MONGO_URL}
+      MONGO_MIN_POOL_SIZE: ${MONGO_MIN_POOL_SIZE:-50}
+      MONGO_MAX_POOL_SIZE: ${MONGO_MAX_POOL_SIZE:-500}
+      MONGO_AUTO_CREATE_INDEXES: ${MONGO_AUTO_CREATE_INDEXES:-false}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB_INDEX: ${REDIS_DB_INDEX:-2}
+      REDIS_CACHE_SERVICE_HOST: ${REDIS_CACHE_SERVICE_HOST:-}
+      REDIS_CACHE_SERVICE_PORT: ${REDIS_CACHE_SERVICE_PORT:-}
+      STORE_ENCRYPTION_KEY: ${STORE_ENCRYPTION_KEY}
+      API_ROOT_URL: "http://api:${API_PORT:-3000}"
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      NEW_RELIC_ENABLED: ${NEW_RELIC_ENABLED:-false}
+      NEW_RELIC_APP_NAME: ${NEW_RELIC_WORKER_APP_NAME:-${NEW_RELIC_APP_NAME:-}}
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
+      BROADCAST_QUEUE_CHUNK_SIZE: ${BROADCAST_QUEUE_CHUNK_SIZE:-100}
+      MULTICAST_QUEUE_CHUNK_SIZE: ${MULTICAST_QUEUE_CHUNK_SIZE:-100}
+      IS_EMAIL_INLINE_CSS_DISABLED: ${IS_EMAIL_INLINE_CSS_DISABLED:-false}
+      IS_USE_MERGED_DIGEST_ID_ENABLED: ${IS_USE_MERGED_DIGEST_ID_ENABLED:-false}
+      # Storage (recommended: real S3/GCS/Azure in production)
+      S3_LOCAL_STACK: ${S3_LOCAL_STACK:-}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-}
+      S3_REGION: ${S3_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      STEP_RESOLVER_DISPATCH_URL: ${STEP_RESOLVER_DISPATCH_URL:-}
+      STEP_RESOLVER_HMAC_SECRET: ${STEP_RESOLVER_HMAC_SECRET:-}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:$${PORT}/v1/health-check || exit 1",
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - novu
+
+  ws:
+    image: "${NOVU_WS_IMAGE:-ghcr.io/novuhq/novu/ws}:${NOVU_IMAGE_TAG:-3.14.0}"
+    container_name: novu_ws
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${WS_PORT:-3002}
+      MONGO_URL: ${MONGO_URL}
+      MONGO_MIN_POOL_SIZE: ${MONGO_MIN_POOL_SIZE:-50}
+      MONGO_MAX_POOL_SIZE: ${MONGO_MAX_POOL_SIZE:-500}
+      MONGO_AUTO_CREATE_INDEXES: ${MONGO_AUTO_CREATE_INDEXES:-false}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB_INDEX: ${REDIS_DB_INDEX:-2}
+      JWT_SECRET: ${JWT_SECRET}
+      GLOBAL_CONTEXT_PATH: ${GLOBAL_CONTEXT_PATH:-}
+      WS_CONTEXT_PATH: ${WS_CONTEXT_PATH:-}
+      NEW_RELIC_ENABLED: ${NEW_RELIC_ENABLED:-false}
+      NEW_RELIC_APP_NAME: ${NEW_RELIC_WS_APP_NAME:-${NEW_RELIC_APP_NAME:-}}
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
+    ports:
+      - "${WS_PORT:-3002}:${WS_PORT:-3002}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:$${PORT}/v1/health-check || exit 1",
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - novu
+
+  dashboard:
+    image: "${NOVU_DASHBOARD_IMAGE:-ghcr.io/novuhq/novu/dashboard}:${NOVU_IMAGE_TAG:-3.14.0}"
+    container_name: novu_dashboard
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+      ws:
+        condition: service_healthy
+    environment:
+      # Injected at runtime by dashboard docker-entrypoint.sh
+      VITE_SELF_HOSTED: "true"
+      VITE_API_HOSTNAME: ${VITE_API_HOSTNAME}
+      VITE_WEBSOCKET_HOSTNAME: ${VITE_WEBSOCKET_HOSTNAME}
+      VITE_LEGACY_DASHBOARD_URL: ${VITE_LEGACY_DASHBOARD_URL:-}
+    ports:
+      - "${DASHBOARD_PORT:-4000}:4000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "const http = require(''http''); const req = http.get({hostname: ''localhost'', port: 4000, path: ''/'', timeout: 5000}, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on(''error'', () => process.exit(1)); req.on(''timeout'', () => { req.destroy(); process.exit(1); });"',
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - novu
+
+networks:
+  novu:
+    name: novu
+
+volumes:
+  mongodb_data: {}
+  redis_data: {}
